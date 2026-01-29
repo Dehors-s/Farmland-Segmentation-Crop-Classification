@@ -1,0 +1,12 @@
+torch>=1.10.0
+torchvision>=0.11.0
+numpy
+pandas
+matplotlib
+seaborn
+scikit-learn
+joblib
+opencv-python
+albumentations
+tqdm
+pyyaml
