@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+venv/
+env/
+.venv/
+.env
+
+# IDE & System
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Deep Learning Models (Large files)
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.onnx
+*.weights
+
+# Datasets and Images
+data/
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.bmp
+*.gif
+
+# Output & Logs
+predictions*/
+output/
+logs/
+runs/
+checkpoints/
+*.log
+*.json
+
+# Specific project outputs
+predictions_v7_vectorized/
+data/
+RF-feature/local_crop_rf_model_v4_best.pkl
+U-NET/best_model.pth
