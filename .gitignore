@@ -45,17 +45,26 @@ checkpoints/
 
 # Specific project outputs
 predictions_v7_vectorized/
-data/
 RF-feature/local_crop_rf_model_v4_best.pkl
 U-NET/best_model.pth
-# 第一步：先排除所有文件和目录（这是基础，确保默认全部忽略）
-*
 
-# 第二步：例外包含所有.py文件（优先级高于上面的*）
+# Crop segmentation specific
+models/
+results/
+
+# Keep the gitignore file
+!.gitignore
+
+# Keep README files
+!README.md
+!*.md
+
+# Keep Python files
 !*.py
 
-# 重要：例外包含所有目录（否则Git会忽略空目录，导致目录下的.py文件也无法被识别）
-!*/
+# Keep __init__.py files
+!*/__init__.py
 
-# 可选：保留.gitignore文件本身（避免该配置文件被自己忽略）
-!.gitignore
+# Keep necessary directories
+!crop_segmentation/
+!crop_segmentation/**/
