@@ -23,6 +23,16 @@ Thumbs.db
 *.h5
 *.onnx
 *.weights
+*.pkl
+*.joblib
+
+# GIS/Shapefile (large binary)
+*.shp
+*.shx
+*.dbf
+*.prj
+*.sbn
+*.sbx
 
 # Datasets and Images
 data/
