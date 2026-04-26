@@ -88,7 +88,8 @@ class MLModelFactory:
             'kernel': 'rbf',
             'C': 1.0,
             'gamma': 'scale',
-            'random_state': 42
+            'random_state': 42,
+            'probability': True
         }
         
         # 更新参数

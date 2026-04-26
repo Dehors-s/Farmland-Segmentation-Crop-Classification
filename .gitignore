@@ -68,3 +68,7 @@ results/
 # Keep necessary directories
 !crop_segmentation/
 !crop_segmentation/**/
+
+# Ignore generated UNet patches
+dataset/
+dataset/**
