@@ -11,34 +11,74 @@
 
 ```
 farm/
-├── cropland_extraction/        # 耕地提取（U-Net 分割 + 矢量化）
-│   ├── u-net--CBAMV7.py        # V7 多任务训练脚本
-│   ├── u-net--CBAMV8.py        # V8 多光谱训练脚本
-│   ├── u-net--CBAMV8_4090.py   # V8 4090 优化版
-│   ├── u-net矢量化V2.py        # 推理 + 矢量化（推荐）
-│   ├── legacy/                 # 历史实验脚本
-│   └── README.md               # 详细使用说明
 │
-├── crop_classification/        # 地物分类（RF / SVM / XGBoost / LGBM / CNN）
-│   ├── crop_segmentation/      # 核心 Python package
-│   │   ├── core/               # 数据加载与模型定义
-│   │   ├── interfaces/         # 训练/推理接口
-│   │   └── utils/              # 地理空间工具
-│   ├── legacy/                 # 历史脚本（1D-CNN, LSTM）
-│   └── README.md               # 详细使用说明
+├── cropland_extraction/                # 项目一：耕地提取（U-Net 分割 + 矢量化）
+│   ├── u-net--CBAMV7.py                # V7 多任务训练（分割+边界+距离）
+│   ├── u-net--CBAMV8.py                # V8 多光谱训练（4通道）
+│   ├── u-net--CBAMV8_4090.py           # V8 RTX 4090 优化版
+│   ├── u-net矢量化V2.py                # 推理 + 矢量化（推荐，支持 --save_shp）
+│   ├── u-net矢量化.py                   # 推理 + 矢量化（原始版，LabelMe JSON）
+│   ├── labelme.py                      # LabelMe 标注工具启动器
+│   ├── compare_models.py               # 模型对比工具
+│   ├── run_pipeline.bat                # Windows 训练→矢量化全流程批处理
+│   ├── requirements.txt                # 基础依赖
+│   ├── requirements_4090.txt           # RTX 4090 环境依赖
+│   ├── plan.md                         # 训练计划
+│   ├── legacy/                         # 历史实验脚本（U-NET）
+│   │   ├── u-net--CBAMV7.py
+│   │   ├── u-net分割推理--cbam.py / --cbamV7.py
+│   │   ├── u-net矢量化.py / _v2.py
+│   │   ├── u-net掩膜坐标提取.py
+│   │   ├── prepare_unet_patches.py     # 遥感影像切片预处理
+│   │   ├── split_dataset_for_unet.py   # 数据集划分
+│   │   ├── diagnose_mask_issue.py / damo.py
+│   │   ├── best_model_config.yaml
+│   │   └── training_curves.png
+│   └── README.md
 │
-├── data/                       # 共享数据
-├── dataset/                    # 训练数据集
-├── models/                     # 训练好的模型
-├── results/                    # 预测结果
+├── crop_classification/                # 项目二：地物分类（ML/DL 遥感分类）
+│   ├── crop_segmentation/              # 核心分类模块（Python package）
+│   │   ├── core/
+│   │   │   ├── data_loader.py          # 地块特征提取（逐地块）
+│   │   │   ├── data_loader_optimized.py# 分块并行提取（大影像）
+│   │   │   ├── models_ml.py            # RF / SVM / XGBoost / LightGBM
+│   │   │   └── models_dl.py            # 1D-CNN (PyTorch)
+│   │   ├── interfaces/
+│   │   │   ├── train_interface.py      # 训练入口 train_pipeline()
+│   │   │   └── infer_interface.py      # 推理入口 predict_pipeline()
+│   │   ├── utils/
+│   │   │   └── geo_utils.py            # 坐标对齐、内存检测等工具
+│   │   ├── test_models/                # 预训练模型 (.joblib)
+│   │   ├── check_model_switch_smoke.py # 冒烟测试
+│   │   ├── check_model_switch_realdata.py
+│   │   ├── test_module_import.py       # 模块导入测试
+│   │   ├── __init__.py
+│   │   ├── README.md
+│   │   └── README_parcel_extraction.md # 地块提取算法说明
+│   ├── legacy/                         # 历史实验脚本
+│   │   ├── 1D-CNN/                     # 早期 1D-CNN 模型
+│   │   ├── LSTM/                       # 早期 LSTM 模型
+│   │   └── check_duplicate_images.py
+│   ├── requirements.txt                # 项目依赖
+│   └── README.md
 │
-├── Wiki/                       # 项目文档
-├── 过程文件/                   # 历史实验文件（归档）
-├── paper/ paper_md/ papers_md/ # 论文参考文献
+├── data/                               # 共享数据
+│   ├── 完整作物边界/                    # 作物分布矢量
+│   ├── 遥感图像/                        # 遥感影像
+│   └── *.tif / *.tif.ovr               # Sentinel-2 时序堆栈
 │
-├── requirements.txt            # 全局依赖（可选）
-├── README.md                   # 本文件（总览）
-└── AGENTS.md                   # Agent 上下文说明
+├── dataset/                            # U-Net 训练集（train/val/test + img/lbl）
+├── models/                             # 训练好的模型文件
+├── results/                            # 预测输出结果
+│
+├── Wiki/ / 📚 Wiki/                    # 项目文档
+├── 过程文件/                            # 历史实验文件（归档）
+├── paper/ / paper_md/ / papers_md/     # 论文参考文献（PDF + MD）
+│
+├── batch_pdf_to_md.py                  # PDF→MD 批量转换工具
+├── requirements.txt                    # 全局依赖（可选安装）
+├── README.md                            # 本文件（项目总览）
+└── AGENTS.md                            # Agent 上下文说明
 ```
 
 ## 快速开始
