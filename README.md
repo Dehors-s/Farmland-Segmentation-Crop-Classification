@@ -63,22 +63,18 @@ farm/
 │   └── README.md
 │
 ├── data/                               # 共享数据
-│   ├── 完整作物边界/                    # 作物分布矢量
-│   ├── 遥感图像/                        # 遥感影像
-│   └── *.tif / *.tif.ovr               # Sentinel-2 时序堆栈
+│   ├── 完整作物边界/                     # 作物分布矢量
+│   ├── 遥感图像/                         # 遥感影像
+│   └── Sentinel2_*.tif / .ovr           # Sentinel-2 时序堆栈
 │
-├── dataset/                            # U-Net 训练集（train/val/test + img/lbl）
-├── models/                             # 训练好的模型文件
-├── results/                            # 预测输出结果
+├── dataset/                            # U-Net 训练集
+│   ├── train/  val/                    # train/val 含 img/ + lbl/
+│   ├── images/  masks/                 # 补充数据
+│   └── audits/                         # 数据审核
 │
-├── Wiki/ / 📚 Wiki/                    # 项目文档
-├── 过程文件/                            # 历史实验文件（归档）
-├── paper/ / paper_md/ / papers_md/     # 论文参考文献（PDF + MD）
-│
-├── batch_pdf_to_md.py                  # PDF→MD 批量转换工具
-├── requirements.txt                    # 全局依赖（可选安装）
-├── README.md                            # 本文件（项目总览）
-└── AGENTS.md                            # Agent 上下文说明
+├── requirements.txt                    # 全局依赖
+├── README.md                           # 本文件（项目总览）
+└── AGENTS.md                           # Agent 上下文说明
 ```
 
 ## 快速开始
