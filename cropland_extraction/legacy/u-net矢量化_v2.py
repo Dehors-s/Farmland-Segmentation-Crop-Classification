@@ -1,6 +1,6 @@
-# u-net矢量化.py
+# u-net矢量化_v2.py
 # 集成功能：模型推理 -> 掩膜生成 -> 轮廓提取(矢量化) -> JSON保存
-# 结合了 u-net分割推理--cbamV7.py 和 u-net掩膜坐标提取.py 的功能
+# v2: 默认使用 resnet50 编码器，并支持通过参数切换编码器
 
 import os
 import torch
@@ -15,7 +15,6 @@ import argparse
 from tqdm import tqdm
 import json
 import warnings
-from itertools import product
 
 warnings.filterwarnings('ignore')
 
@@ -106,11 +105,18 @@ class CBAMDecoderBlock(nn.Module):
 
 
 class CBAMUNet(nn.Module):
-    def __init__(self, encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1, use_cbam=True, dropout_rate=0.2):
+    def __init__(self, encoder_name='resnet50', encoder_weights='imagenet', in_channels=3, classes=1, use_cbam=True, dropout_rate=0.2):
         super(CBAMUNet, self).__init__()
         import torchvision.models as models
 
-        base_model = models.resnet34(weights=None)
+        if encoder_name == 'resnet34':
+            base_model = models.resnet34(weights='IMAGENET1K_V1' if encoder_weights else None)
+            encoder_channels = [64, 64, 128, 256, 512]
+        elif encoder_name == 'resnet50':
+            base_model = models.resnet50(weights='IMAGENET1K_V1' if encoder_weights else None)
+            encoder_channels = [64, 256, 512, 1024, 2048]
+        else:
+            raise ValueError(f"不支持的 encoder_name: {encoder_name}. 仅支持 resnet34/resnet50")
 
         self.encoder1 = nn.Sequential(base_model.conv1, base_model.bn1, base_model.relu, base_model.maxpool)
         self.encoder2 = base_model.layer1
@@ -118,7 +124,6 @@ class CBAMUNet(nn.Module):
         self.encoder4 = base_model.layer3
         self.encoder5 = base_model.layer4
 
-        encoder_channels = [64, 64, 128, 256, 512]
         decoder_channels = [256, 128, 64, 32]
 
         self.bridge = nn.Sequential(
@@ -149,7 +154,7 @@ class CBAMUNet(nn.Module):
 
 
 class MultiTaskUNet(nn.Module):
-    def __init__(self, encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1, use_cbam=True, dropout_rate=0.2):
+    def __init__(self, encoder_name='resnet50', encoder_weights='imagenet', in_channels=3, classes=1, use_cbam=True, dropout_rate=0.2):
         super(MultiTaskUNet, self).__init__()
 
         self.base = CBAMUNet(encoder_name, encoder_weights, in_channels, classes, use_cbam, dropout_rate)
@@ -213,9 +218,10 @@ class MultiTaskUNet(nn.Module):
 # 2. 预测器类
 # ============================================================================
 class Predictor:
-    def __init__(self, model_path, device='cuda', dropout_rate=0.2, encoder_name='resnet34'):
+    def __init__(self, model_path, encoder_name='resnet50', device='cuda', dropout_rate=0.2):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         print(f"使用设备: {self.device}")
+        print(f"编码器: {encoder_name}")
 
         self.model = MultiTaskUNet(
             encoder_name=encoder_name,
@@ -290,9 +296,11 @@ class Predictor:
 
         return binary_mask, binary_boundary, original_img, seg_mask, boundary_mask, distance_map
 
-    def process_and_save(self, save_dir, filename, binary_mask, boundary_mask, original_img, 
+    def process_and_save(self, save_dir, filename, binary_mask, boundary_mask, original_img,
                          prob_mask=None, prob_boundary=None, distance_map=None,
-                         save_overlay=True, save_prob=False, boundary_erode_iter=0):
+                         save_overlay=True, save_prob=False,
+                         remove_boundary=True, boundary_erode_iter=0,
+                         empty_fallback=True):
         """
         处理掩膜(去除边界)并保存图片结果
         返回处理后的最终掩膜(final_mask)供后续矢量化使用
@@ -301,22 +309,23 @@ class Predictor:
         save_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(filename).stem
 
-        # 保存分割掩膜
         cv2.imencode('.png', binary_mask)[1].tofile(str(save_dir / f"{stem}_seg_mask.png"))
-        
-        # 保存边界掩膜
         cv2.imencode('.png', boundary_mask)[1].tofile(str(save_dir / f"{stem}_boundary.png"))
 
-        processed_boundary = boundary_mask.copy()
-        if boundary_erode_iter and boundary_erode_iter > 0:
-            kernel = np.ones((3, 3), np.uint8)
-            processed_boundary = cv2.erode(processed_boundary, kernel, iterations=boundary_erode_iter)
-
-        # 生成最终掩膜：从分割结果中减去边界
         final_mask = binary_mask.copy()
-        final_mask[processed_boundary > 0] = 0
-        
-        # 保存最终掩膜
+        if remove_boundary:
+            boundary_for_subtract = boundary_mask.copy()
+            # Optionally shrink boundary band before subtraction to avoid over-cutting edges.
+            if boundary_erode_iter > 0:
+                kernel = np.ones((3, 3), np.uint8)
+                boundary_for_subtract = cv2.erode(boundary_for_subtract, kernel, iterations=boundary_erode_iter)
+            final_mask[boundary_for_subtract > 0] = 0
+
+            # Safety net: if boundary subtraction wipes out the whole foreground, keep raw seg mask.
+            if empty_fallback and np.count_nonzero(binary_mask) > 0 and np.count_nonzero(final_mask) == 0:
+                print(f"[警告] {filename}: 扣除边界后掩膜为空，已回退为原分割掩膜。")
+                final_mask = binary_mask.copy()
+
         cv2.imencode('.png', final_mask)[1].tofile(str(save_dir / f"{stem}_mask.png"))
 
         if save_overlay:
@@ -324,7 +333,7 @@ class Predictor:
             red_mask = np.zeros_like(original_img)
             red_mask[binary_mask == 255] = [255, 0, 0]
             green_mask = np.zeros_like(original_img)
-            green_mask[processed_boundary > 0] = [0, 255, 0]
+            green_mask[boundary_mask > 0] = [0, 255, 0]
 
             mask_combined = cv2.addWeighted(red_mask, 1.0, green_mask, 1.0, 0)
             overlay = cv2.addWeighted(overlay, 0.7, mask_combined, 0.3, 0)
@@ -351,40 +360,38 @@ def extract_contours_from_mask_array(mask, min_area=100, epsilon_factor=0.001,
     从掩膜数组(numpy)中提取轮廓坐标
     """
     h, w = mask.shape
-    
-    # 确保是二值
+
     if mask.max() > 1:
-         _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+        _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
     else:
         binary = (mask * 255).astype(np.uint8)
-    
-    # 形态学平滑（闭运算填孔 + 开运算去噪）
+
+    # Smooth small zig-zag boundaries before contour extraction for cleaner polygons.
     if morph_kernel and morph_kernel >= 3:
         if morph_kernel % 2 == 0:
             morph_kernel += 1
         kernel = np.ones((morph_kernel, morph_kernel), np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=morph_iter)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=morph_iter)
-    
-    # 查找轮廓
+
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     polygons = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area < min_area:
             continue
-            
-        # 轮廓近似
+
         epsilon = epsilon_factor * cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, epsilon, True)
-        
+
         points = approx.reshape(-1, 2).tolist()
-        
+
         if len(points) > 2:
             polygons.append(points)
-            
+
     return (h, w), polygons
+
 
 def save_to_json(polygons, image_path, output_json_path, image_shape):
     """
@@ -399,7 +406,7 @@ def save_to_json(polygons, image_path, output_json_path, image_shape):
         "imageHeight": image_shape[0],
         "imageWidth": image_shape[1]
     }
-    
+
     for poly in polygons:
         shape = {
             "label": "farmland",
@@ -409,17 +416,16 @@ def save_to_json(polygons, image_path, output_json_path, image_shape):
             "flags": {}
         }
         data["shapes"].append(shape)
-        
+
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
 
 def visualize_contours(image_img, polygons, output_vis_path):
     """
     在原图(numpy array)上可视化提取的轮廓
     """
-    # 确保是BGR格式以便cv2保存
     if image_img.shape[2] == 3:
-        # 假设输入是RGB (因为Predictor返回的是RGB)
         vis_img = cv2.cvtColor(image_img, cv2.COLOR_RGB2BGR)
     else:
         vis_img = image_img.copy()
@@ -432,47 +438,103 @@ def visualize_contours(image_img, polygons, output_vis_path):
     cv2.imencode('.jpg', vis_img)[1].tofile(str(output_vis_path))
 
 
-def parse_sweep_values(raw_value, cast_func):
-    """
-    将逗号分隔参数解析为列表，例如 "0.12,0.15,0.18"
-    """
-    if raw_value is None:
-        return []
+# ============================================================================
+# 4. 主函数 (集成推理与矢量化)
+# ============================================================================
+def main():
+    default_model = r"D:\Work space\DeepLearning\farm\best_model.pth"
+    default_input = r"D:\Work space\DeepLearning\farm\U-NET\img9.png"
+    default_output = r"./predictions_v7_vectorized_tune2"
 
-    values = []
-    for item in str(raw_value).split(','):
-        item = item.strip()
-        if not item:
-            continue
-        values.append(cast_func(item))
-    return values
+    default_threshold = 0.5
+    default_seg_threshold = None
+    default_boundary_threshold = 0.30
 
+    default_min_area = 120
+    default_epsilon = 0.008
+    default_morph_kernel = 3
+    default_morph_iter = 1
 
-def build_run_name(config_index, seg_th, bound_th, boundary_erode_iter, morph_kernel, morph_iter, epsilon):
-    return (
-        f"run_{config_index:02d}"
-        f"_seg{seg_th:.3f}"
-        f"_bound{bound_th:.3f}"
-        f"_erode{boundary_erode_iter}"
-        f"_mk{morph_kernel}"
-        f"_mi{morph_iter}"
-        f"_eps{epsilon:.4f}"
-    )
+    default_save_prob = False
+    default_save_overlay = True
+    default_remove_boundary = True
+    default_boundary_erode_iter = 0
+    default_encoder_name = 'resnet50'
 
+    parser = argparse.ArgumentParser(description="U-Net 全流程：推理 -> 掩膜 -> 矢量化(JSON)")
+    parser.add_argument('--model', type=str, default=default_model, help='模型权重路径 (.pth)')
+    parser.add_argument('--input', type=str, default=default_input, help='输入图片或文件夹路径')
+    parser.add_argument('--output', type=str, default=default_output, help='输出保存路径')
 
-def run_single_config(files, predictor, output_dir, seg_th, bound_th, min_area,
-                      epsilon, morph_kernel, morph_iter, boundary_erode_iter,
-                      save_overlay, save_prob):
-    mask_dir = output_dir / "masks"
-    json_dir = output_dir / "json"
-    vis_dir = output_dir / "visualization"
+    parser.add_argument('--encoder_name', type=str, default=default_encoder_name, choices=['resnet34', 'resnet50'], help='编码器类型')
+    parser.add_argument('--threshold', type=float, default=default_threshold, help='统一阈值')
+    parser.add_argument('--seg_threshold', type=float, default=default_seg_threshold, help='分割阈值')
+    parser.add_argument('--boundary_threshold', type=float, default=default_boundary_threshold, help='边界阈值')
+    parser.add_argument('--dropout', type=float, default=0.2, help='Dropout率')
+    parser.add_argument('--save_prob', action='store_true', default=default_save_prob, help='保存概率图')
+
+    parser.add_argument('--min_area', type=float, default=default_min_area, help='矢量化最小面积过滤')
+    parser.add_argument('--epsilon', type=float, default=default_epsilon, help='轮廓简化系数(建议0.005~0.015)')
+    parser.add_argument('--morph_kernel', type=int, default=default_morph_kernel, help='轮廓提取前平滑核大小(0表示关闭)')
+    parser.add_argument('--morph_iter', type=int, default=default_morph_iter, help='形态学平滑迭代次数')
+    parser.add_argument('--boundary_erode_iter', type=int, default=default_boundary_erode_iter, help='扣边界前先腐蚀边界的迭代次数')
+    parser.add_argument('--remove_boundary', dest='remove_boundary', action='store_true', help='从分割掩膜中扣除边界区域')
+    parser.add_argument('--no_remove_boundary', dest='remove_boundary', action='store_false', help='不扣除边界区域，直接矢量化分割掩膜')
+    parser.set_defaults(remove_boundary=default_remove_boundary)
+
+    args = parser.parse_args()
+
+    if not args.model or not os.path.exists(args.model):
+        print("错误: 请指定有效的模型路径 (--model)")
+        if default_model and os.path.exists(default_model):
+            args.model = default_model
+            print(f"使用代码内配置的模型: {args.model}")
+        else:
+            return
+
+    if not args.input or not os.path.exists(args.input):
+        print("错误: 请指定有效的输入路径 (--input)")
+        if default_input and os.path.exists(default_input):
+            args.input = default_input
+            print(f"使用代码内配置的输入: {args.input}")
+        else:
+            return
+
+    threshold = args.threshold
+    seg_th = args.seg_threshold if args.seg_threshold is not None else threshold
+    bound_th = args.boundary_threshold if args.boundary_threshold is not None else threshold * 0.2
+
+    predictor = Predictor(args.model, encoder_name=args.encoder_name, dropout_rate=args.dropout)
+
+    input_path = Path(args.input)
+    if input_path.is_file():
+        files = [input_path]
+    else:
+        valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+        files = [p for p in input_path.iterdir() if p.is_file() and p.suffix.lower() in valid_exts]
+
+    if len(files) == 0:
+        print(f"错误: 输入路径下未找到可处理图片: {args.input}")
+        print("支持格式: .jpg .jpeg .png .bmp .tif .tiff")
+        return
+
+    out_dir = Path(args.output)
+    mask_dir = out_dir / "masks"
+    json_dir = out_dir / "json"
+    vis_dir = out_dir / "visualization"
 
     mask_dir.mkdir(parents=True, exist_ok=True)
     json_dir.mkdir(parents=True, exist_ok=True)
     vis_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"开始处理 {len(files)} 张图片...")
+    print(f"编码器配置: {args.encoder_name}")
+    print(f"阈值配置: Seg={seg_th}, Boundary={bound_th}")
+    print(f"矢量化配置: min_area={args.min_area}, epsilon={args.epsilon}, morph_kernel={args.morph_kernel}, morph_iter={args.morph_iter}")
+    print(f"边界处理: remove_boundary={args.remove_boundary}, boundary_erode_iter={args.boundary_erode_iter}")
+
     success_count = 0
-    for f in tqdm(files, desc=output_dir.name, leave=False):
+    for f in tqdm(files):
         try:
             bin_mask, bin_boundary, orig_img, prob_mask, prob_boundary, dist_map = predictor.predict(
                 f, seg_th, bound_th
@@ -481,17 +543,26 @@ def run_single_config(files, predictor, output_dir, seg_th, bound_th, min_area,
             final_mask = predictor.process_and_save(
                 mask_dir, f.name, bin_mask, bin_boundary, orig_img,
                 prob_mask, prob_boundary, dist_map,
-                save_overlay=save_overlay,
-                save_prob=save_prob,
-                boundary_erode_iter=boundary_erode_iter
+                save_overlay=default_save_overlay,
+                save_prob=args.save_prob,
+                remove_boundary=args.remove_boundary,
+                boundary_erode_iter=args.boundary_erode_iter,
+                empty_fallback=True
             )
+
+            seg_pixels = int(np.count_nonzero(bin_mask))
+            final_pixels = int(np.count_nonzero(final_mask))
+            if seg_pixels > 0 and final_pixels == 0:
+                print(f"[提示] {f.name}: 原分割有前景({seg_pixels}px)，但最终掩膜为空。建议提高 --boundary_threshold 或加大 --boundary_erode_iter。")
+            elif seg_pixels == 0:
+                print(f"[提示] {f.name}: 分割头输出为空，建议先调低 --seg_threshold（如 0.45~0.55）验证。")
 
             img_shape, polygons = extract_contours_from_mask_array(
                 final_mask,
-                min_area=min_area,
-                epsilon_factor=epsilon,
-                morph_kernel=morph_kernel,
-                morph_iter=morph_iter
+                min_area=args.min_area,
+                epsilon_factor=args.epsilon,
+                morph_kernel=args.morph_kernel,
+                morph_iter=args.morph_iter
             )
 
             json_path = json_dir / f"{f.stem}.json"
@@ -507,186 +578,15 @@ def run_single_config(files, predictor, output_dir, seg_th, bound_th, min_area,
             import traceback
             traceback.print_exc()
 
-    return success_count
-
-
-# ============================================================================
-# 4. 主函数 (集成推理与矢量化)
-# ============================================================================
-def main():
-    # ==================== 参数配置区域 ====================
-    # 1. 模型路径
-    default_model = r"D:\Work space\DeepLearning\farm\results_v7_ultimate\best_model.pth" 
-    
-    # 2. 输入图像路径
-    default_input = r"D:\Work space\DeepLearning\farm\U-NET\3.png" 
-    
-    # 3. 输出基础目录
-    default_output = r"./predictions_v7_vectorized"
-    
-    # 4. 阈值设置
-    default_threshold = 0.5          # 统一阈值
-    default_seg_threshold = None     # 分割阈值 (None则使用统一阈值)
-    default_boundary_threshold = None # 边界阈值 (None则使用统一阈值 * 0.2)
-    
-    # 5. 矢量化设置
-    default_min_area = 50            # 最小轮廓面积
-    default_epsilon = 0.001          # 轮廓简化系数
-    default_morph_kernel = 0         # 形态学平滑核大小 (0 表示关闭)
-    default_morph_iter = 1           # 形态学迭代次数
-    default_boundary_erode_iter = 0  # 扣边界前先腐蚀边界，减小向田内收缩
-    
-    # 6. 功能开关
-    default_save_prob = False        # 保存概率图
-    default_save_overlay = True      # 保存推理叠加图
-    # ====================================================
-
-    parser = argparse.ArgumentParser(description="U-Net 全流程：推理 -> 掩膜 -> 矢量化(JSON)")
-    parser.add_argument('--model', type=str, default=default_model, help='模型权重路径 (.pth)')
-    parser.add_argument('--input', type=str, default=default_input, help='输入图片或文件夹路径')
-    parser.add_argument('--output', type=str, default=default_output, help='输出保存路径')
-    
-    # 推理参数
-    parser.add_argument('--threshold', type=float, default=default_threshold, help='统一阈值')
-    parser.add_argument('--seg_threshold', type=float, default=default_seg_threshold, help='分割阈值')
-    parser.add_argument('--boundary_threshold', type=float, default=default_boundary_threshold, help='边界阈值')
-    parser.add_argument('--dropout', type=float, default=0.2, help='Dropout率')
-    parser.add_argument('--save_prob', action='store_true', default=default_save_prob, help='保存概率图')
-    parser.add_argument('--boundary_erode_iter', type=int, default=default_boundary_erode_iter,
-                        help='扣边界前先腐蚀边界的迭代次数(建议0~2)')
-    
-    # 矢量化参数
-    parser.add_argument('--min_area', type=float, default=default_min_area, help='矢量化最小面积过滤')
-    parser.add_argument('--epsilon', type=float, default=default_epsilon, help='轮廓简化系数(建议0.001~0.015)')
-    parser.add_argument('--morph_kernel', type=int, default=default_morph_kernel, help='轮廓提取前形态学平滑核大小(0表示关闭)')
-    parser.add_argument('--morph_iter', type=int, default=default_morph_iter, help='形态学平滑迭代次数')
-    parser.add_argument('--sweep', action='store_true', help='自动批量导出多组参数结果')
-    parser.add_argument('--sweep_boundary_thresholds', type=str,
-                        default='0.10,0.12,0.15', help='批量边界阈值列表，逗号分隔')
-    parser.add_argument('--sweep_boundary_erode_iters', type=str,
-                        default='0,1', help='批量边界腐蚀次数列表，逗号分隔')
-    parser.add_argument('--sweep_morph_kernels', type=str,
-                        default='0,3', help='批量形态学核大小列表，逗号分隔')
-    parser.add_argument('--sweep_epsilons', type=str,
-                        default='0.004,0.006', help='批量轮廓简化系数列表，逗号分隔')
-    parser.add_argument('--encoder_name', type=str, default='resnet50', help='骨干网络类型')
-    
-    args = parser.parse_args()
-
-    # 参数校验
-    if not args.model or not os.path.exists(args.model):
-        print("错误: 请指定有效的模型路径 (--model)")
-        # 为了方便用户直接修改代码运行，如果命令行没给，尝试检查default_model
-        if default_model and os.path.exists(default_model):
-            args.model = default_model
-            print(f"使用代码内配置的模型: {args.model}")
-        else:
-            return
-
-    if not args.input or not os.path.exists(args.input):
-        print("错误: 请指定有效的输入路径 (--input)")
-        if default_input and os.path.exists(default_input):
-            args.input = default_input
-            print(f"使用代码内配置的输入: {args.input}")
-        else:
-            return
-
-    # 阈值处理
-    threshold = args.threshold
-    seg_th = args.seg_threshold if args.seg_threshold is not None else threshold
-    bound_th = args.boundary_threshold if args.boundary_threshold is not None else threshold * 0.2
-
-    # 初始化预测器
-    predictor = Predictor(args.model, dropout_rate=args.dropout, encoder_name=args.encoder_name)
-
-    # 准备文件列表
-    input_path = Path(args.input)
-    if input_path.is_file():
-        files = [input_path]
-    else:
-        files = list(input_path.glob('*.[jp][pn]g'))
-
-    # 准备输出目录
-    out_dir = Path(args.output)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"开始处理 {len(files)} 张图片...")
-
-    if args.sweep:
-        sweep_boundary_thresholds = parse_sweep_values(args.sweep_boundary_thresholds, float)
-        sweep_boundary_erode_iters = parse_sweep_values(args.sweep_boundary_erode_iters, int)
-        sweep_morph_kernels = parse_sweep_values(args.sweep_morph_kernels, int)
-        sweep_epsilons = parse_sweep_values(args.sweep_epsilons, float)
-
-        configs = list(product(
-            sweep_boundary_thresholds,
-            sweep_boundary_erode_iters,
-            sweep_morph_kernels,
-            sweep_epsilons,
-        ))
-
-        print(f"批量模式: 共 {len(configs)} 组参数")
-        print(f"输出基础目录: {out_dir}")
-
-        total_success = 0
-        for config_index, (cfg_bound_th, cfg_erode_iter, cfg_morph_kernel, cfg_epsilon) in enumerate(configs, start=1):
-            run_name = build_run_name(
-                config_index,
-                seg_th,
-                cfg_bound_th,
-                cfg_erode_iter,
-                cfg_morph_kernel,
-                args.morph_iter,
-                cfg_epsilon,
-            )
-            run_output_dir = out_dir / run_name
-
-            print(f"\n[{config_index}/{len(configs)}] {run_name}")
-            success_count = run_single_config(
-                files=files,
-                predictor=predictor,
-                output_dir=run_output_dir,
-                seg_th=seg_th,
-                bound_th=cfg_bound_th,
-                min_area=args.min_area,
-                epsilon=cfg_epsilon,
-                morph_kernel=cfg_morph_kernel,
-                morph_iter=args.morph_iter,
-                boundary_erode_iter=cfg_erode_iter,
-                save_overlay=default_save_overlay,
-                save_prob=args.save_prob,
-            )
-            print(f"完成: {success_count}/{len(files)} -> {run_output_dir}")
-            total_success += success_count
-
-        print(f"\n全部完成！总成功处理: {total_success}/{len(files) * len(configs)}")
-        print(f"输出目录结构: {out_dir}")
-        print("  └─ run_xx_*/     (每组参数一个子目录，内含 masks/json/visualization)")
-    else:
-        print(f"阈值配置: Seg={seg_th}, Boundary={bound_th}")
-        print(f"边界处理: boundary_erode_iter={args.boundary_erode_iter}")
-
-        success_count = run_single_config(
-            files=files,
-            predictor=predictor,
-            output_dir=out_dir,
-            seg_th=seg_th,
-            bound_th=bound_th,
-            min_area=args.min_area,
-            epsilon=args.epsilon,
-            morph_kernel=args.morph_kernel,
-            morph_iter=args.morph_iter,
-            boundary_erode_iter=args.boundary_erode_iter,
-            save_overlay=default_save_overlay,
-            save_prob=args.save_prob,
-        )
-
-        print(f"\n全部完成！成功处理: {success_count}/{len(files)}")
-        print(f"输出目录结构: {out_dir}")
-        print(f"  ├─ masks/         (推理生成的掩膜图片)")
-        print(f"  ├─ json/          (矢量化JSON文件)")
-        print(f"  └─ visualization/ (矢量化效果展示)")
+    print(f"\n全部完成！成功处理: {success_count}/{len(files)}")
+    print(f"输出目录结构: {out_dir}")
+    print(f"  ├─ masks/         (推理生成的掩膜图片)")
+    print(f"  ├─ json/          (矢量化JSON文件)")
+    print(f"  └─ visualization/ (矢量化效果展示)")
 
 
 if __name__ == "__main__":
     main()
+#python u-net矢量化_v2.py --output ./predictions_v7_vectorized_tune2 --seg_threshold 0.58 --boundary_threshold 0.30 --epsilon 0.010 --min_area 150 --morph_kernel 3 --morph_iter 1 --no_remove_boundary
+#python u-net矢量化_v2.py --output ./predictions_v7_vectorized_tune2 --seg_threshold 0.58 --boundary_threshold 0.30 --epsilon 0.005 --min_area 120 --no_remove_boundary
+#python u-net矢量化_v2.py --epsilon 0.01 --morph_kernel 5

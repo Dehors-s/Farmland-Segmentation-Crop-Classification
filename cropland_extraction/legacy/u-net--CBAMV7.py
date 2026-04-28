@@ -848,34 +848,22 @@ class Trainer:
 
 
 if __name__ == '__main__':
-    import argparse
     set_seed(42)
 
-    parser = argparse.ArgumentParser(description="U-Net Training V7")
-    parser.add_argument('--data_root', type=str, required=True, help='数据集根目录')
-    parser.add_argument('--output_dir', type=str, required=True, help='输出保存目录')
-    parser.add_argument('--encoder_name', type=str, default='resnet50', help='骨干网络 (默认: resnet50)')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size (默认: 16)')
-    parser.add_argument('--epochs', type=int, default=50, help='Epochs (默认: 50)')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (默认: 1e-4)')
-    parser.add_argument('--num_workers', type=int, default=0, help='Num workers (默认: 0)')
-    
-    args = parser.parse_args()
-
     config = {
-        'data_root': args.data_root,
-        'output_dir': args.output_dir,
-        'encoder_name': args.encoder_name,
+        'data_root': r'/root/autodl-tmp/farm_project',
+        'output_dir': r'/root/autodl-tmp/farm_project/outputsv2',
+        'encoder_name': 'resnet50',
         'encoder_weights': 'imagenet',
         'use_cbam': True,
         'img_size': 512,
-        'batch_size': args.batch_size,
-        'epochs': args.epochs,
-        'lr': args.lr,
+        'batch_size': 32,
+        'epochs': 50,
+        'lr': 1e-4,
         'min_lr': 1e-7,
         'weight_decay': 1e-4,
         'boundary_weight': 0.5,
-        'num_workers': args.num_workers,
+        'num_workers': 12,
         'save_interval': 5,
         'plot_interval': 2,
         'use_amp': True,
@@ -885,7 +873,7 @@ if __name__ == '__main__':
         'dropout_rate': 0.2,
         'debug_mode': False,
         'min_boundary_weight': 0.1,
-        'resume_path': r'autodl-tmp/farm_project/outputs/final_model.pth' 
+        'resume_path': r'autodl-tmp/farm_project/outputs/final_model.pth'  # 可以设置为之前保存的模型路径以继续训练,
     }
 
     trainer = Trainer(config)

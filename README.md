@@ -1,89 +1,96 @@
 # 耕地分割与作物分类项目 (Farmland Segmentation & Crop Classification)
 
-本项目旨在利用深度学习与机器学习技术，实现高精度的耕地提取（分割）与作物分类。项目包含图像分割（U-Net）和基于时序特征的作物分类（RF/CNN/LSTM）两大模块。
+本项目包含两个独立的子项目：
+
+| 子项目 | 目录 | 说明 |
+|--------|------|------|
+| 🛰️ **耕地提取** | [`cropland_extraction/`](cropland_extraction/) | 基于 CBAM U-Net 的耕地分割与矢量化 |
+| 🌱 **地物分类** | [`crop_classification/`](crop_classification/) | 基于机器学习/深度学习的遥感作物分类 |
 
 ## 📁 目录结构
 
 ```
-耕地分割/
-├── U-NET/                      # 图像分割模块
-│   ├── u-net--CBAMV7.py        # V7模型训练脚本 (MultiTask: 分割+边界+距离)
-│   ├── u-net分割推理--cbamV7.py # V7模型推理脚本 (支持批量预测、结果可视化)
-│   └── best_model_config.yaml  # 训练配置文件
-├── RF-feature/                 # 随机森林分类模块
-│   ├── RF-feature.py           # 随机森林训练与评估
-│   └── predict_shp.py          # 结合SHP文件的预测脚本
-├── 1D-CNN/                     # 一维卷积神经网络分类模块
-│   └── 1D-CNN.py               # 1D-CNN 训练脚本
-├── LSTM/                       # 长短期记忆网络分类模块
-│   └── LSTM.py                 # LSTM 训练脚本
-├── data/                       # 数据目录 (需自行准备)
-└── requirements.txt            # 项目依赖列表
+farm/
+├── cropland_extraction/        # 耕地提取（U-Net 分割 + 矢量化）
+│   ├── u-net--CBAMV7.py        # V7 多任务训练脚本
+│   ├── u-net--CBAMV8.py        # V8 多光谱训练脚本
+│   ├── u-net--CBAMV8_4090.py   # V8 4090 优化版
+│   ├── u-net矢量化V2.py        # 推理 + 矢量化（推荐）
+│   ├── legacy/                 # 历史实验脚本
+│   └── README.md               # 详细使用说明
+│
+├── crop_classification/        # 地物分类（RF / SVM / XGBoost / LGBM / CNN）
+│   ├── crop_segmentation/      # 核心 Python package
+│   │   ├── core/               # 数据加载与模型定义
+│   │   ├── interfaces/         # 训练/推理接口
+│   │   └── utils/              # 地理空间工具
+│   ├── legacy/                 # 历史脚本（1D-CNN, LSTM）
+│   └── README.md               # 详细使用说明
+│
+├── data/                       # 共享数据
+├── dataset/                    # 训练数据集
+├── models/                     # 训练好的模型
+├── results/                    # 预测结果
+│
+├── Wiki/                       # 项目文档
+├── 过程文件/                   # 历史实验文件（归档）
+├── paper/ paper_md/ papers_md/ # 论文参考文献
+│
+├── requirements.txt            # 全局依赖（可选）
+├── README.md                   # 本文件（总览）
+└── AGENTS.md                   # Agent 上下文说明
 ```
 
-## 🛠️ 环境依赖
+## 快速开始
 
-推荐使用 Python 3.8+ 环境。
+### 耕地提取（U-Net）
 
-1. **安装依赖**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   *注意: 如果使用 GPU 训练，请确保安装了与 CUDA 版本匹配的 `torch` 和 `torchvision`。*
-
-## 🚀 功能与使用说明
-
-### 1. 耕地分割 (U-NET)
-
-该模块使用改进的 U-Net (集成 CBAM 注意力机制) 进行耕地提取。V7 版本采用了多任务学习架构 (分割 + 边界检测 + 距离变换)，能有效提升分割精度并改善边缘细节。
-
-#### 1.1 模型训练
-使用 `u-net--CBAMV7.py` 进行训练。
-*   需在脚本中配置训练数据路径。
-*   支持自动保存最佳模型权重 (`.pth`)。
-
-#### 1.2 模型推理
-使用 `u-net分割推理--cbamV7.py` 对新图片进行预测。
-
-**基本用法**:
 ```bash
-# 命令行运行
-python U-NET/u-net分割推理--cbamV7.py --model ./U-NET/best_model.pth --input ./data/test_images --output ./predictions_v7
+# 训练
+python cropland_extraction/u-net--CBAMV7.py \
+    --data_root ./dataset --output_dir ./models
+
+# 推理矢量化
+python cropland_extraction/u-net矢量化V2.py \
+    --model ./models/best_model.pth --input ./data --output ./results --save_shp
 ```
 
-**参数说明**:
-*   `--model`: 模型权重路径 (.pth)
-*   `--input`: 输入图片或文件夹路径
-*   `--output`: 结果保存目录
-*   `--threshold`: 分割阈值 (默认 0.5)
-*   `--save_prob`: 是否保存概率图
+详细说明见 [`cropland_extraction/README.md`](cropland_extraction/README.md)。
 
-**输出结果**:
-*   `*_mask.png`: 最终分割掩膜 (已扣除边界)
-*   `*_overlay.jpg`: 可视化叠加图 (红色=耕地, 绿色=边界)
+### 地物分类
 
----
+```bash
+# 冒烟测试
+python crop_classification/crop_segmentation/check_model_switch_smoke.py
 
-### 2. 作物分类 (RF / CNN / LSTM)
+# 训练（Python API）
+python -c "
+from crop_classification.crop_segmentation.interfaces.train_interface import train_pipeline
+train_pipeline('rf', shp_path='data/train.shp', tif_path='data/image.tif', output_dir='models')
+"
+```
 
-该模块基于多时相遥感特征 (CSV数据) 对作物类型进行分类 (如棉花、玉米、小麦等)。
+详细说明见 [`crop_classification/README.md`](crop_classification/README.md)。
 
-#### 2.1 数据准备
-需要准备 CSV 格式的训练数据 (例如 `Training_Data_for_Python_v4.csv`)，包含各类植被指数 (NDVI, GCVI 等) 的时序特征。
+## 环境依赖
 
-#### 2.2 随机森林 (Random Forest)
-运行 `RF-feature/RF-feature.py`:
-*   自动进行特征重要性分析。
-*   执行网格搜索 (Grid Search) 寻找最佳超参数。
-*   输出分类报告与混淆矩阵。
-*   保存模型为 `.pkl` 文件。
+每个子项目有独立的 `requirements.txt`：
 
-#### 2.3 深度学习分类 (1D-CNN / LSTM)
-*   **1D-CNN**: 运行 `1D-CNN/1D-CNN.py`，利用卷积提取时序特征。
-*   **LSTM**: 运行 `LSTM/LSTM.py`，利用循环神经网络捕捉长时间依赖关系。
-*   这两个脚本均包含完整的数据预处理、模型定义、训练循环及评估代码。
+```bash
+# 仅耕地提取
+pip install -r cropland_extraction/requirements.txt
+
+# 仅地物分类
+pip install -r crop_classification/requirements.txt
+
+# 或安装全局依赖（包含两者）
+pip install -r requirements.txt
+```
+
+推荐使用 Python 3.8+，GPU 训练需安装对应 CUDA 版本的 PyTorch。
 
 ## ⚠️ 注意事项
 
-1.  **大文件忽略**: 项目根目录下的 `.gitignore` 已配置忽略所有模型权重 (`.pth`, `.pkl`)、数据集图片及预测结果目录，提交代码时请注意检查。
-2.  **路径配置**: 各脚本中的默认路径可能需要根据您的实际环境进行微调 (建议通过命令行参数指定路径，或修改脚本顶部的配置区域)。
+1.  **大文件忽略**: 模型权重 (`.pth`, `.pkl`)、数据集图片、预测结果等已被 `.gitignore` 忽略，不会进入版本控制。
+2.  **路径配置**: 各脚本的默认路径可能需要根据实际环境调整，建议通过命令行参数指定。
+3.  **数据格式**: U-Net 数据集要求 `train/img/*.png`, `train/lbl/*.png` 格式；作物分类要求 GeoTIFF + Shapefile。

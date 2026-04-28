@@ -76,8 +76,10 @@ results/
 !*/__init__.py
 
 # Keep necessary directories
-!crop_segmentation/
-!crop_segmentation/**/
+!crop_classification/
+!crop_classification/**/
+!cropland_extraction/
+!cropland_extraction/**/
 
 # Ignore generated UNet patches
 dataset/
