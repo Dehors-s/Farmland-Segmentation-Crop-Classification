@@ -1,0 +1,4 @@
+model,best_iou,best_bdy_iou,epochs_trained,first_iou,last_iou,max_iou,first_bdy_iou,last_bdy_iou,bdy_loss_min,lr,batch_size,encoder,scheduler,norm_mode,min_bdy_weight,dropout,weight_decay,loss_type,epoch_to_0.60,epoch_to_0.65,epoch_to_0.70,epoch_to_0.72,epoch_to_0.74,epoch_to_0.75,epoch_to_0.76,epoch_to_0.77
+V8,0.7777550172161412,0.41161798142098094,141,0.5690,0.7778,0.7778,0.0156,0.4111,0.5690,0.0005,32,resnet50,,legacy,0.3,0.1,5e-05,log_cosh_dice,2,6,20,32,49,65,75,96
+V8.5,0.7549362359820185,0.39936841742412466,139,0.5417,0.7549,0.7549,0.0742,0.3976,0.5676,0.0005,32,resnet50,cosine,percentile,0.6,0.1,5e-05,log_cosh_dice,3,8,45,75,104,127,,
+V9,0.7059458807414892,0.3560822891945742,48,0.4998,0.7059,0.7059,0.0161,0.3573,0.6203,0.0004,24,resnet50,cosine,percentile,0.6,0.1,5e-05,log_cosh_dice,5,11,42,,,,,

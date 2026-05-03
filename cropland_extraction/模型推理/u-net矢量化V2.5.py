@@ -18,6 +18,8 @@ from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
+from scipy.ndimage import gaussian_filter1d as _gaussian_filter1d
+
 
 # ============================================================================
 # V8 模型定义 (与 u-net--CBAMV8.py / V8_4090 / V8.5 完全一致)
@@ -534,9 +536,8 @@ def smooth_polygon(points, sigma=2.0):
         return points
     pts = np.array(points, dtype=np.float32)
     closed = np.vstack([pts, pts[0]])
-    from scipy.ndimage import gaussian_filter1d
-    smooth_x = gaussian_filter1d(closed[:, 0], sigma, mode='wrap')
-    smooth_y = gaussian_filter1d(closed[:, 1], sigma, mode='wrap')
+    smooth_x = _gaussian_filter1d(closed[:, 0], sigma, mode='wrap')
+    smooth_y = _gaussian_filter1d(closed[:, 1], sigma, mode='wrap')
     return np.column_stack([smooth_x[:-1], smooth_y[:-1]]).tolist()
 
 
@@ -582,8 +583,9 @@ def separate_fields_watershed(binary_mask, boundary_mask, distance_map, min_dist
         dm = (dm - dm.min()) / (dm.max() - dm.min() + 1e-8)
         dist_norm = 0.7 * dist_norm + 0.3 * dm
 
-    from scipy import ndimage
-    local_max = ndimage.maximum_filter(dist_norm, size=min_distance * 2 + 1)
+    # 用 OpenCV dilate 替代 scipy.ndimage.maximum_filter (快 10-100x)
+    kernel_max = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (min_distance * 2 + 1, min_distance * 2 + 1))
+    local_max = cv2.dilate(dist_norm, kernel_max)
     sure_fg = (dist_norm == local_max) & (dist_norm > 0.05) & (minus_bdy > 0)
     sure_fg = sure_fg.astype(np.uint8)
 
@@ -641,27 +643,51 @@ def instance_to_contours(instance_mask, min_area=50, epsilon_factor=0.001):
 # ============================================================================
 # Shapefile 导出 (ArcGIS 兼容)
 # ============================================================================
-def save_polygons_to_shp(polygons, output_shp, crs=None):
+def save_polygons_to_shp(polygons, output_shp, geo_transform=None, src_crs=None, output_epsg=None):
+    """保存为 Shapefile，将像素坐标转换为地理坐标。"""
     try:
         import geopandas as gpd
-        from shapely.geometry import Polygon
+        from shapely.geometry import Polygon as ShpPoly
+        from rasterio.crs import CRS
     except ImportError:
-        print("  [SHP] geopandas/shapely 未安装，无法保存 shapefile")
+        print("  [SHP] geopandas/shapely/rasterio 未安装，无法保存 shapefile")
         return
 
+    # 像素坐标 → 地理坐标
     geom_list = []
     for poly in polygons:
-        if len(poly) >= 3:
-            try:
-                geom_list.append(Polygon(poly))
-            except Exception as e:
-                print(f"  [SHP] 多边形创建失败: {e}")
+        if len(poly) < 3:
+            continue
+        try:
+            pts = []
+            for px, py in poly:
+                if geo_transform is not None:
+                    x, y = geo_transform * (px, py)
+                else:
+                    x, y = px, py
+                pts.append((x, y))
+            geom_list.append(ShpPoly(pts))
+        except Exception as e:
+            print(f"  [SHP] 多边形创建失败: {e}")
 
     if not geom_list:
         print("  [SHP] 没有有效多边形，不生成 shapefile")
         return
 
-    gdf = gpd.GeoDataFrame(geometry=geom_list, crs=crs)
+    # CRS 优先级: output_epsg > src_crs (from GeoTIFF)
+    if output_epsg:
+        crs = CRS.from_epsg(output_epsg)
+    elif src_crs:
+        crs = CRS.from_wkt(src_crs) if isinstance(src_crs, str) else src_crs
+        if hasattr(crs, 'is_valid') and not crs.is_valid:
+            crs = None
+    else:
+        crs = None
+
+    gdf = gpd.GeoDataFrame(
+        {"id": list(range(len(geom_list))), "label": ["farmland"] * len(geom_list)},
+        geometry=geom_list, crs=crs.to_wkt() if crs else None,
+    )
     gdf.to_file(output_shp, encoding="utf-8")
     print(f"  [SHP] 已保存 {len(geom_list)} 个地块 -> {output_shp}")
 
@@ -677,7 +703,7 @@ def run_inference_pipeline(
     use_tta=False, use_crf=False, use_watershed=True,
     min_area=50, epsilon_factor=0.002,
     smooth_sigma=1.5, save_shp=False, save_vis=False,
-    norm_mode="percentile",
+    norm_mode="percentile", source_epsg=None,
 ):
     """完整的推理管线 (V2 经典流程 + V2.5 增强归一化)。"""
     import geopandas as gpd
@@ -736,10 +762,11 @@ def run_inference_pipeline(
             seg_minus_bdy = cv2.morphologyEx(seg_minus_bdy, cv2.MORPH_OPEN, kernel, iterations=1)
 
             if use_watershed:
-                from scipy import ndimage
                 dist = cv2.distanceTransform(seg_minus_bdy, cv2.DIST_L2, 5)
                 if dist.max() > 0:
-                    local_max = ndimage.maximum_filter(dist, size=7)
+                    # 用 OpenCV dilate 替代 scipy.ndimage.maximum_filter (快 10-100x)
+                    kernel_max = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                    local_max = cv2.dilate(dist, kernel_max)
                     sure_fg = ((dist == local_max) & (dist > 5.0)).astype(np.uint8)
                     _, markers = cv2.connectedComponents(sure_fg)
                     markers = markers + 1
@@ -787,13 +814,12 @@ def run_inference_pipeline(
         # 保存 SHP（单张）
         if save_shp and polygons:
             try:
-                gdf = gpd.GeoDataFrame(
-                    geometry=[Polygon(p) for p in polygons],
-                    crs=crs,
+                from rasterio.transform import Affine
+                af = Affine(*transform) if transform is not None else None
+                save_polygons_to_shp(
+                    polygons, os.path.join(shp_output, f"{stem}.shp"),
+                    geo_transform=af, src_crs=crs, output_epsg=source_epsg,
                 )
-                shp_path = os.path.join(shp_output, f"{stem}.shp")
-                gdf.to_file(shp_path, encoding="utf-8")
-                print(f"  [SHP] {shp_path} ({len(polygons)} features)")
             except Exception as e:
                 print(f"  [SHP] 保存失败: {e}")
 
@@ -841,8 +867,10 @@ if __name__ == "__main__":
     parser.add_argument("--tta", action="store_true", help="启用测试时增强")
     parser.add_argument("--crf", action="store_true", help="启用 DenseCRF 后处理")
     parser.add_argument("--no_watershed", action="store_true", help="禁用分水岭分离")
-    parser.add_argument("--save_shp", action="store_true", help="保存 Shapefile")
+    parser.add_argument("--save_shp", action="store_true", help="保存 Shapefile (自动转换像素→地理坐标)")
     parser.add_argument("--save_vis", action="store_true", help="保存可视化结果")
+    parser.add_argument("--source_epsg", type=int, default=None,
+                        help="源坐标系 EPSG 编码 (默认从 GeoTIFF 读取)")
 
     args = parser.parse_args()
 
@@ -872,4 +900,5 @@ if __name__ == "__main__":
         save_shp=args.save_shp,
         save_vis=args.save_vis,
         norm_mode=args.norm_mode,
+        source_epsg=args.source_epsg,
     )
